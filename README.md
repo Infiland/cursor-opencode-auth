@@ -24,6 +24,8 @@ Important distinction:
 
 ## Installation
 
+> **WSL2 Users**: See [docs/WSL2_SETUP.md](docs/WSL2_SETUP.md) for detailed WSL2-specific setup instructions, including fixes for common issues like IPv6 networking problems in corporate environments.
+
 ### Method 1 (recommended): paste this into OpenCode
 
 Copy/paste this whole block as a prompt in OpenCode:
@@ -132,6 +134,7 @@ Docs:
 
 - `docs/PLAN.md` (architecture + roadmap)
 - `docs/USAGE.md` (how to install + use)
+- `docs/WSL2_SETUP.md` (WSL2-specific setup guide with troubleshooting)
 - `docs/SECURITY.md` (risks + mitigations)
 
 The OpenCode plugin adds tools:
