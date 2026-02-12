@@ -81,12 +81,17 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
         const explicitModel = requested && requested !== "auto" ? requested : undefined;
         if (explicitModel) lastRequestedModel = explicitModel;
 
+        // Resolve the model to use. Prefer an explicit (non-auto) model from the
+        // request, then the last explicitly-requested model (when strictModel is
+        // enabled), then the configured default. We intentionally skip the raw
+        // "auto" value — passing --model auto to the Cursor CLI lets Cursor pick
+        // its cheapest model (currently gemini-3-flash), which is almost never
+        // what the caller actually wants.
         const model =
           explicitModel ||
           (config.strictModel ? lastRequestedModel : undefined) ||
-          requested ||
           lastRequestedModel ||
-          config.defaultModel;
+          (config.defaultModel !== "auto" ? config.defaultModel : undefined);
 
         const prompt = buildPromptFromMessages(body.messages || []);
 
@@ -100,9 +105,21 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
         if (config.mode !== "agent") cmdArgs.push("--mode", config.mode);
 
         cmdArgs.push("--workspace", config.workspace);
-        cmdArgs.push("--model", model);
+
+        // Only pass --model when we have a concrete model ID. Omitting it lets
+        // Cursor CLI use its own default (the user's selected model in Cursor
+        // settings) instead of the unpredictable "auto" routing.
+        if (model) {
+          cmdArgs.push("--model", model);
+        }
+
         cmdArgs.push("--output-format", "text");
         cmdArgs.push(prompt);
+
+        // eslint-disable-next-line no-console
+        console.log(
+          `[bridge] POST /v1/chat/completions → model=${model || "(cli-default)"} workspace=${config.workspace}`,
+        );
 
         const out = await run(config.agentBin, cmdArgs, {
           cwd: config.workspace,
