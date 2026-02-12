@@ -109,6 +109,7 @@ export function createCliTools(args: {
           cmdArgs.push("--mode", mode);
         }
 
+        cmdArgs.push("--workspace", args.cwd);
         cmdArgs.push("--output-format", outputFormat);
 
         if (toolArgs.model) {
