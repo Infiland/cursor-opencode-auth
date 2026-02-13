@@ -90,6 +90,11 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
 
         const prompt = buildPromptFromMessages(body.messages || []);
 
+        // Per-request workspace override: X-Cursor-Workspace header > config.workspace
+        const headerWs = req.headers["x-cursor-workspace"];
+        const requestWorkspace =
+          (typeof headerWs === "string" && headerWs.trim()) || config.workspace;
+
         const cmdArgs: string[] = ["--print"];
 
         // For non-interactive usage, avoid prompts that would hang the bridge.
@@ -99,13 +104,13 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
         // Cursor CLI only accepts --mode=ask|plan. "agent" is the default when --mode is omitted.
         if (config.mode !== "agent") cmdArgs.push("--mode", config.mode);
 
-        cmdArgs.push("--workspace", config.workspace);
+        cmdArgs.push("--workspace", requestWorkspace);
         cmdArgs.push("--model", model);
         cmdArgs.push("--output-format", "text");
         cmdArgs.push(prompt);
 
         const out = await run(config.agentBin, cmdArgs, {
-          cwd: config.workspace,
+          cwd: requestWorkspace,
           timeoutMs: config.timeoutMs,
         });
         if (out.code !== 0) {

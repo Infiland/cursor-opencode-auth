@@ -56,6 +56,25 @@ export async function isBridgeUp(timeoutMs = 500): Promise<boolean> {
   }
 }
 
+/**
+ * Returns the workspace the running bridge was started with, or undefined if
+ * the bridge is not reachable.
+ */
+export async function getBridgeWorkspace(timeoutMs = 500): Promise<string | undefined> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(getBridgeHealthURL(), { signal: controller.signal });
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as { workspace?: string };
+    return data.workspace;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function startBridgeDetached(agentBin: string, workspace?: string): Promise<number> {
   const script = getBridgeScriptPath();
   if (!script) {
@@ -120,7 +139,26 @@ export async function stopBridgeByPidFile(): Promise<boolean> {
 
 export async function ensureBridgeProcess(agentBin: string, workspace?: string) {
   if (!shouldAutostartBridge()) return;
-  if (await isBridgeUp()) return;
+
+  // If the bridge is already running, check whether its workspace matches.
+  // When the workspace differs (e.g. OpenCode opened a different project), restart
+  // the bridge so the new project gets the correct --workspace flag.
+  if (await isBridgeUp()) {
+    if (workspace) {
+      const running = await getBridgeWorkspace();
+      if (running && path.resolve(running) !== path.resolve(workspace)) {
+        // Workspace mismatch — stop the old bridge and start a new one.
+        await stopBridgeByPidFile();
+        // Give the OS a moment to release the port.
+        await new Promise((r) => setTimeout(r, 300));
+      } else {
+        return; // bridge is up and workspace matches (or we don't care)
+      }
+    } else {
+      return; // no workspace preference — whatever is running is fine
+    }
+  }
+
   try {
     await startBridgeDetached(agentBin, workspace);
 
