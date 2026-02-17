@@ -1,10 +1,3 @@
-Absolutely, Lord 👑
-
-Here is a clean, professional, **GitHub-ready `CONTRIBUTING.md`** in proper open-source format.
-You can copy-paste this directly.
-
----
-
 ````
 # Contributing to cursor-opencode-auth
 
