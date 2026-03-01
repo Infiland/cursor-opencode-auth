@@ -11,6 +11,8 @@ This repo is intentionally built around *documented* Cursor surfaces:
 
 It does **not** attempt to reverse-engineer private Cursor endpoints.
 
+[![Star History Chart](https://api.star-history.com/svg?repos=Infiland/cursor-opencode-auth&type=Date)](https://star-history.com/#Infiland/cursor-opencode-auth&Date)
+
 ## What this enables
 
 - Use Cursor's model lineup (via Cursor CLI) *from inside* OpenCode as a callable tool.
