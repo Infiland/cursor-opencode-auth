@@ -6,6 +6,10 @@ import { tool } from "@opencode-ai/plugin";
 
 import { parseModelList } from "../lib/models.js";
 import { run } from "../lib/process.js";
+import {
+  formatStreamJsonSummary,
+  parseStreamJsonOutput,
+} from "../lib/streamJson.js";
 
 export function createCliTools(args: {
   agentBin: string;
@@ -81,9 +85,11 @@ export function createCliTools(args: {
           .optional()
           .describe("Cursor model ID (optional, e.g. gpt-5.2)"),
         outputFormat: tool.schema
-          .enum(["text", "json"])
+          .enum(["text", "json", "stream-json"])
           .optional()
-          .describe("Cursor CLI output format (default: text)"),
+          .describe(
+            "Cursor CLI output format (default: text). Use stream-json to see tool calls and intermediate steps.",
+          ),
         force: tool.schema
           .boolean()
           .optional()
@@ -130,6 +136,11 @@ export function createCliTools(args: {
           throw new Error(
             `Cursor CLI failed (exit ${res.code}).\n` + `stderr: ${res.stderr.trim()}`,
           );
+        }
+
+        if (outputFormat === "stream-json") {
+          const summary = parseStreamJsonOutput(res.stdout);
+          return formatStreamJsonSummary(summary);
         }
 
         return res.stdout.trim();
@@ -214,7 +225,7 @@ export function createCliTools(args: {
             );
           }
 
-          const cmdArgs: string[] = ["--print", "--force", "--output-format", "text"];
+          const cmdArgs: string[] = ["--print", "--force", "--output-format", "stream-json"];
           // Cursor CLI only accepts --mode=ask|plan. "agent" is the default when --mode is omitted.
           if (mode !== "agent") cmdArgs.push("--mode", mode);
           if (toolArgs.model) cmdArgs.push("--model", toolArgs.model);
@@ -260,15 +271,19 @@ export function createCliTools(args: {
           });
 
           const patchText = diff.stdout.trimEnd();
-          const summary = nameStatus.code === 0 ? nameStatus.stdout.trim() : "";
+          const fileSummary = nameStatus.code === 0 ? nameStatus.stdout.trim() : "";
+
+          // Parse stream-json output for structured activity report.
+          const parsed = parseStreamJsonOutput(cursorRes.stdout);
+          const activityText = formatStreamJsonSummary(parsed);
 
           if (!patchText) {
             return [
               "<cursor_cli_patch>",
               "<message>Cursor completed, but produced no git diff (no changes).</message>",
-              summary ? `<summary>\n${summary}\n</summary>` : "",
-              cursorRes.stdout.trim()
-                ? `<cursor_stdout>\n${cursorRes.stdout.trim()}\n</cursor_stdout>`
+              fileSummary ? `<summary>\n${fileSummary}\n</summary>` : "",
+              activityText
+                ? `<cursor_activity>\n${activityText}\n</cursor_activity>`
                 : "",
               cursorRes.stderr.trim()
                 ? `<cursor_stderr>\n${cursorRes.stderr.trim()}\n</cursor_stderr>`
@@ -281,9 +296,9 @@ export function createCliTools(args: {
 
           return [
             "<cursor_cli_patch>",
-            summary ? `<summary>\n${summary}\n</summary>` : "",
-            cursorRes.stdout.trim()
-              ? `<cursor_stdout>\n${cursorRes.stdout.trim()}\n</cursor_stdout>`
+            fileSummary ? `<summary>\n${fileSummary}\n</summary>` : "",
+            activityText
+              ? `<cursor_activity>\n${activityText}\n</cursor_activity>`
               : "",
             cursorRes.stderr.trim()
               ? `<cursor_stderr>\n${cursorRes.stderr.trim()}\n</cursor_stderr>`
@@ -311,6 +326,63 @@ export function createCliTools(args: {
             await rm(tempDir, { recursive: true, force: true });
           }
         }
+      },
+    }),
+
+    cursor_cli_mcp_list: tool({
+      description:
+        "List MCP servers configured in Cursor CLI (agent mcp list).",
+      args: {
+        timeoutMs: tool.schema
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Timeout in ms (optional)"),
+      },
+      async execute(toolArgs) {
+        const res = await run(args.agentBin, ["mcp", "list"], {
+          cwd: args.cwd,
+          timeoutMs: toolArgs.timeoutMs ?? 60_000,
+        });
+        if (res.code !== 0) {
+          throw new Error(
+            `agent mcp list failed (exit ${res.code}).\n${res.stderr.trim()}`,
+          );
+        }
+        return res.stdout.trim();
+      },
+    }),
+
+    cursor_cli_mcp_tools: tool({
+      description:
+        "List tools provided by a specific MCP server in Cursor CLI (agent mcp list-tools <server>).",
+      args: {
+        serverName: tool.schema
+          .string()
+          .describe("Name of the MCP server to inspect"),
+        timeoutMs: tool.schema
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Timeout in ms (optional)"),
+      },
+      async execute(toolArgs) {
+        const res = await run(
+          args.agentBin,
+          ["mcp", "list-tools", toolArgs.serverName],
+          {
+            cwd: args.cwd,
+            timeoutMs: toolArgs.timeoutMs ?? 60_000,
+          },
+        );
+        if (res.code !== 0) {
+          throw new Error(
+            `agent mcp list-tools failed (exit ${res.code}).\n${res.stderr.trim()}`,
+          );
+        }
+        return res.stdout.trim();
       },
     }),
   };

@@ -268,6 +268,23 @@ Plan: start with (1), add (2) behind a flag, and document tradeoffs.
 - Implement MCP stdio server
 - Mirror tools for both Cursor + OpenCode
 
+## Upstream dependencies
+
+### OpenCode: plugin-registered providers
+
+OpenCode's plugin API (`@opencode-ai/plugin`) supports `tool()` registration and event hooks, but **not provider registration**. Providers are configured via `opencode.json` with an AI SDK package (e.g., `@ai-sdk/openai-compatible`). This forces the bridge server workaround for the provider use case.
+
+A proper integration would require OpenCode to add a `provider()` registration function to the plugin API, allowing plugins to register model providers directly. Until then, the bridge creates an agent-wrapping-agent architecture where Cursor CLI's full agent loop is opaque to OpenCode.
+
+### Cursor CLI: stream-json as the primary integration format
+
+Cursor CLI's `--output-format stream-json` produces rich NDJSON events (tool calls, assistant messages, session metadata). This project now uses `stream-json` in both the plugin tools and the bridge to:
+
+- Surface Cursor's tool call activity in `cursor_cli_run` and `cursor_cli_patch`
+- Extract clean assistant text in the bridge (filtering out tool call noise)
+
+If Cursor changes the NDJSON event schema, the parsers in `lib/streamJson.ts` (both packages) will need updating.
+
 ## Success criteria
 
 - From OpenCode, a user can:

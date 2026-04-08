@@ -86,7 +86,7 @@ npm --workspaces run build
 Create `~/.config/opencode/plugins/cursor-opencode-auth.ts`:
 
 ```ts
-// Uses your local checkout (v0.1.1+) instead of a cached npm install.
+// Uses your local checkout (v0.2.0+) instead of a cached npm install.
 export { CursorPlugin } from "/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js";
 ```
 
@@ -100,7 +100,7 @@ If you prefer installing from npm instead of a local checkout, pin the version i
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-plugin-cursor@0.1.1"]
+  "plugin": ["opencode-plugin-cursor@0.2.0"]
 }
 ```
 
@@ -143,8 +143,10 @@ The OpenCode plugin adds tools:
 
 - `cursor_cli_status` (shows Cursor CLI auth status)
 - `cursor_cli_models` (lists Cursor CLI models)
-- `cursor_cli_run` (runs Cursor CLI in `--print` mode)
+- `cursor_cli_run` (runs Cursor CLI in `--print` mode; supports `stream-json` output for full tool call visibility)
 - `cursor_cli_patch` (runs Cursor CLI in an isolated git worktree and returns a patch)
+- `cursor_cli_mcp_list` (lists MCP servers configured in Cursor CLI)
+- `cursor_cli_mcp_tools` (lists tools from a specific Cursor MCP server)
 - `cursor_cloud_*` tools (launch and manage Cursor Cloud Agents via `https://api.cursor.com/v0/...`)
 
 ## Repo layout
@@ -162,6 +164,22 @@ The OpenCode plugin adds tools:
 - `cursor_cli_run`: one-off Cursor CLI response (defaults to Cursor `ask` mode)
 - `cursor_cli_patch`: run Cursor in an isolated git worktree and return a diff inside `<patch>...</patch>` (apply with OpenCode `patch`)
 - `cursor_cloud_*`: manage Cursor Cloud Agents via `https://api.cursor.com/v0/...` (requires `CURSOR_API_KEY`)
+
+## Known limitations
+
+### Bridge-as-provider creates nested agent loops
+
+Cursor CLI is a full coding agent (it reads files, calls tools, writes code), not a model. When you use `cursor/<model>` as an OpenCode provider, OpenCode sends a prompt to the bridge, which runs Cursor's own agent loop, then returns only the final text. This means:
+
+- Two agent loops run with no coordination (OpenCode's loop wrapping Cursor's loop).
+- Cursor's internal tool calls (file reads, edits, shell commands) are invisible to OpenCode.
+- OpenCode treats Cursor's agent output as a "model response," which is a semantic mismatch.
+
+**Recommended:** Use the CLI tools (`cursor_cli_run` with `outputFormat: "stream-json"`, or `cursor_cli_patch`) instead of the provider for full visibility into what Cursor did. The provider approach works for simple question-answering but loses important context for coding tasks.
+
+### OpenCode does not support plugin-registered providers
+
+OpenCode's plugin API supports registering tools and event hooks, but not custom model providers. Providers must be configured via `opencode.json` with an AI SDK package (e.g., `@ai-sdk/openai-compatible`). This is why the bridge server exists as a workaround. A proper integration would require OpenCode to add `provider()` registration to its plugin API (see [OpenCode plugin docs](https://opencode.ai/docs/plugins/)).
 
 ## Safety notes
 
