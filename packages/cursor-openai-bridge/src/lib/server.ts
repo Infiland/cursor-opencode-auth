@@ -12,6 +12,7 @@ import {
   type OpenAiChatCompletionRequest,
 } from "./openai.js";
 import { run } from "./process.js";
+import { extractAssistantText } from "./streamJson.js";
 
 type ModelCache = { at: number; models: CursorCliModel[] };
 
@@ -106,7 +107,7 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
 
         cmdArgs.push("--workspace", requestWorkspace);
         cmdArgs.push("--model", model);
-        cmdArgs.push("--output-format", "text");
+        cmdArgs.push("--output-format", "stream-json");
         cmdArgs.push(prompt);
 
         const out = await run(config.agentBin, cmdArgs, {
@@ -123,7 +124,14 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
           return;
         }
 
-        const content = out.stdout.trim();
+        // Extract only the assistant's text from the NDJSON stream,
+        // discarding tool-call events so the OpenAI response is clean.
+        const assistantText = extractAssistantText(out.stdout);
+        if (!assistantText) {
+          // eslint-disable-next-line no-console
+          console.warn("No assistant text found in stream-json output; falling back to raw stdout.");
+        }
+        const content = assistantText || out.stdout.trim();
         const id = `chatcmpl_${randomUUID().replace(/-/g, "")}`;
         const created = Math.floor(Date.now() / 1000);
 
@@ -212,6 +220,20 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
     console.log(`- approve mcps: ${config.approveMcps}`);
     // eslint-disable-next-line no-console
     console.log(`- required api key: ${config.requiredKey ? "yes" : "no"}`);
+    // eslint-disable-next-line no-console
+    console.log("");
+    // eslint-disable-next-line no-console
+    console.log(
+      "NOTE: Cursor CLI is a full coding agent, not a model. Using it as an",
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      "OpenAI provider creates nested agent loops. For full visibility into",
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      "Cursor's actions, use cursor_cli_run (with stream-json) or cursor_cli_patch instead.",
+    );
   });
 
   return server;

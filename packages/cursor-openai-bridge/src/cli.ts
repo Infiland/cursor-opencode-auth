@@ -3,7 +3,7 @@ import { startBridgeServer } from "./lib/server.js";
 
 async function main() {
   const config = loadBridgeConfig();
-  startBridgeServer({ version: "0.1.1", config });
+  startBridgeServer({ version: "0.2.0", config });
 }
 
 main().catch((err) => {

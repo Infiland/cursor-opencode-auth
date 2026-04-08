@@ -27,7 +27,7 @@ Example (local checkout):
 
 ```ts
 // ~/.config/opencode/plugins/cursor.ts
-// Uses your local checkout (v0.1.1+) instead of a cached npm install.
+// Uses your local checkout (v0.2.0+) instead of a cached npm install.
 export { CursorPlugin } from "/abs/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js";
 ```
 
@@ -100,7 +100,7 @@ After publishing `opencode-plugin-cursor` to npm:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-plugin-cursor@0.1.1"]
+  "plugin": ["opencode-plugin-cursor@0.2.0"]
 }
 ```
 
