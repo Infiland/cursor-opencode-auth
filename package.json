@@ -2,10 +2,15 @@
   "name": "cursor-opencode-auth",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/cursor-openai-bridge",
+    "packages/opencode-plugin-cursor"
   ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "build": "npm --workspaces run build",
-    "typecheck": "npm --workspaces run typecheck"
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run build -w cursor-openai-bridge && npm run typecheck --workspaces",
+    "test": "npm run build -w cursor-openai-bridge && npm test --workspaces"
   }
 }

@@ -1,63 +1,80 @@
+import type { CursorUsage } from "./streamJson.js";
+
 export type OpenAiChatCompletionRequest = {
-  model?: string;
-  messages: any[];
-  stream?: boolean;
+  model?: unknown;
+  messages?: unknown;
+  stream?: unknown;
+  stream_options?: unknown;
+  tools?: unknown;
 };
 
-export function normalizeModelId(raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  // Some clients use "provider/model". Cursor CLI expects just "model".
-  const parts = trimmed.split("/");
-  return parts[parts.length - 1] || undefined;
+export type OpenAiUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tokens_details?: { cached_tokens: number };
+};
+
+export type CompletionMeta = { id: string; created: number; model: string };
+
+export type ChunkDelta = { role?: "assistant"; content?: string; reasoning_content?: string };
+
+/** Cursor reports cache reads/writes separately from (non-cached) input tokens. */
+export function toOpenAiUsage(usage: CursorUsage | undefined): OpenAiUsage {
+  if (!usage) return { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const prompt = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: usage.outputTokens,
+    total_tokens: prompt + usage.outputTokens,
+    prompt_tokens_details: { cached_tokens: usage.cacheReadTokens },
+  };
 }
 
-function messageContentToText(content: any): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((p) => {
-        if (!p) return "";
-        if (typeof p === "string") return p;
-        if (p.type === "text" && typeof p.text === "string") return p.text;
-        return "";
-      })
-      .join("");
-  }
-  return "";
+export function chunk(meta: CompletionMeta, delta: ChunkDelta, finishReason: string | null = null) {
+  return {
+    id: meta.id,
+    object: "chat.completion.chunk",
+    created: meta.created,
+    model: meta.model,
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  };
 }
 
-export function buildPromptFromMessages(messages: any[]): string {
-  const systemParts: string[] = [];
-  const convo: string[] = [];
+/** The trailing usage chunk sent when `stream_options.include_usage` is set. */
+export function usageChunk(meta: CompletionMeta, usage: OpenAiUsage) {
+  return {
+    id: meta.id,
+    object: "chat.completion.chunk",
+    created: meta.created,
+    model: meta.model,
+    choices: [],
+    usage,
+  };
+}
 
-  for (const m of messages || []) {
-    const role = m?.role;
-    const text = messageContentToText(m?.content);
-    if (!text) continue;
+export function completion(meta: CompletionMeta, content: string, reasoning: string, usage: OpenAiUsage) {
+  return {
+    id: meta.id,
+    object: "chat.completion",
+    created: meta.created,
+    model: meta.model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content, ...(reasoning ? { reasoning_content: reasoning } : {}) },
+        finish_reason: "stop",
+      },
+    ],
+    usage,
+  };
+}
 
-    if (role === "system" || role === "developer") {
-      systemParts.push(text);
-      continue;
-    }
-    if (role === "user") {
-      convo.push(`User: ${text}`);
-      continue;
-    }
-    if (role === "assistant") {
-      convo.push(`Assistant: ${text}`);
-      continue;
-    }
-    if (role === "tool" || role === "function") {
-      convo.push(`Tool: ${text}`);
-      continue;
-    }
-  }
+export function wantsUsage(body: OpenAiChatCompletionRequest): boolean {
+  const opts = body.stream_options;
+  return typeof opts === "object" && opts !== null && (opts as { include_usage?: unknown }).include_usage === true;
+}
 
-  const system = systemParts.length
-    ? `System:\n${systemParts.join("\n\n")}\n\n`
-    : "";
-  const transcript = convo.join("\n\n");
-  return system + transcript + "\n\nAssistant:";
+export function hasTools(body: OpenAiChatCompletionRequest): boolean {
+  return Array.isArray(body.tools) && body.tools.length > 0;
 }

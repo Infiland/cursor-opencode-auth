@@ -1,97 +1,72 @@
 import { tool } from "@opencode-ai/plugin";
 
 import {
-  getBridgeBaseURL,
-  getBridgeHealthURL,
-  isBridgeUp,
-  startBridgeDetached,
-  stopBridgeByPidFile,
+  bridgeHealth,
+  bridgeLogFile,
+  ensureBridge,
+  expectedBridgeVersion,
+  stopBridge,
 } from "../lib/bridge.js";
+import { isLocalBridge, type PluginSettings } from "../lib/settings.js";
 
-export function createBridgeTools(args: { agentBin: string; cwd: string }) {
+const pretty = (value: unknown) => JSON.stringify(value, null, 2);
+
+export function createBridgeTools(args: { settings: PluginSettings; cwd: string }) {
+  const { settings } = args;
+  const urls = { baseURL: settings.bridgeURL, v1BaseURL: `${settings.bridgeURL}/v1` };
+
   return {
     cursor_bridge_status: tool({
-      description: "Check whether the local cursor-openai-bridge is reachable (GET /health).",
+      description: "Check whether the local cursor-openai-bridge (Cursor as an OpenCode provider) is running.",
       args: {},
       async execute() {
-        const ok = await isBridgeUp(500);
-        return JSON.stringify(
-          {
-            ok,
-            baseURL: getBridgeBaseURL(),
-            v1BaseURL: `${getBridgeBaseURL()}/v1`,
-            healthURL: getBridgeHealthURL(),
-          },
-          null,
-          2,
-        );
+        const health = await bridgeHealth(settings);
+        const expected = expectedBridgeVersion();
+        return pretty({
+          ok: Boolean(health),
+          ...urls,
+          ...(health ?? {}),
+          ...(health && expected && health.version !== expected
+            ? { outdated: true, expectedVersion: expected, hint: "Run cursor_bridge_restart to use the new build." }
+            : {}),
+          logFile: bridgeLogFile(),
+        });
       },
     }),
 
     cursor_bridge_start: tool({
-      description:
-        "Start the local cursor-openai-bridge as a detached process (if not already running).",
+      description: "Start the local cursor-openai-bridge in the background if it is not already running.",
       args: {},
       async execute() {
-        if (await isBridgeUp(300)) {
-          return JSON.stringify(
-            {
-              ok: true,
-              alreadyRunning: true,
-              baseURL: getBridgeBaseURL(),
-              v1BaseURL: `${getBridgeBaseURL()}/v1`,
-            },
-            null,
-            2,
-          );
+        const result = await ensureBridge(settings, { workspace: args.cwd });
+        if (result.status === "remote") {
+          return pretty({ ok: false, ...urls, message: "The bridge URL is not local; start that bridge yourself." });
         }
-
-        const pid = await startBridgeDetached(args.agentBin, args.cwd);
-
-        // Wait briefly for it to come up.
-        const start = Date.now();
-        while (Date.now() - start < 5_000) {
-          if (await isBridgeUp(300)) {
-            return JSON.stringify(
-              {
-                ok: true,
-                pid,
-                baseURL: getBridgeBaseURL(),
-                v1BaseURL: `${getBridgeBaseURL()}/v1`,
-              },
-              null,
-              2,
-            );
-          }
-          await new Promise((r) => setTimeout(r, 250));
-        }
-
-        return JSON.stringify(
-          {
-            ok: false,
-            pid,
-            message:
-              "Started process but /health did not respond yet. Check logs by running the bridge manually.",
-          },
-          null,
-          2,
-        );
+        if (result.status === "failed") return pretty({ ok: false, ...urls, error: result.error, logFile: result.logFile });
+        return pretty({ ok: true, ...urls, status: result.status, ...result.health });
       },
     }),
 
     cursor_bridge_stop: tool({
-      description: "Stop the local cursor-openai-bridge using the pid file (best-effort).",
+      description: "Stop the local cursor-openai-bridge.",
       args: {},
       async execute() {
-        const stopped = await stopBridgeByPidFile();
-        return JSON.stringify(
-          {
-            stopped,
-            ok: !(await isBridgeUp(300)),
-          },
-          null,
-          2,
-        );
+        const result = await stopBridge(settings);
+        return pretty({ ...result, running: Boolean(await bridgeHealth(settings, 300)) });
+      },
+    }),
+
+    cursor_bridge_restart: tool({
+      description: "Restart the local cursor-openai-bridge (picks up a rebuilt bridge or changed environment).",
+      args: {},
+      async execute() {
+        if (!isLocalBridge(settings)) {
+          return pretty({ ok: false, ...urls, message: "The bridge URL is not local; restart that bridge yourself." });
+        }
+        const stopped = await stopBridge(settings);
+        const result = await ensureBridge(settings, { workspace: args.cwd });
+        if (result.status === "failed") return pretty({ ok: false, stopped, error: result.error, logFile: result.logFile });
+        return pretty({ ok: true, ...urls, stopped: stopped.stopped, ...("health" in result ? result.health : {}) });
       },
     }),
   };

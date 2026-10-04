@@ -1,12 +1,17 @@
 {
   "name": "opencode-plugin-cursor",
-  "version": "0.2.0",
-  "description": "OpenCode plugin that bridges to Cursor CLI and Cloud Agents API",
+  "version": "0.3.0",
+  "description": "OpenCode plugin for Cursor: Cursor models as an OpenCode provider (OpenCode v2 and 1.x), plus Cursor CLI and Cloud Agents tools",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "keywords": [
     "opencode",
@@ -16,16 +21,24 @@
     "agents"
   ],
   "files": [
-    "dist"
+    "dist",
+    "server.js"
   ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p tsconfig.test.json && node --test --test-reporter=spec \"dist-test/test/**/*.test.js\""
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.0.0"
+    "@ai-sdk/provider": "^3.0.18",
+    "@opencode-ai/plugin": "^1.18.34",
+    "cursor-openai-bridge": "^0.3.0"
   },
   "devDependencies": {
+    "@opencode/plugin": "^2.0.22",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"
   }

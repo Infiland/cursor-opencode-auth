@@ -1,6 +1,11 @@
 import * as path from "node:path";
 
-export type CursorExecutionMode = "agent" | "ask" | "plan";
+import { normalizeModelId, resolveAgentBin, type CursorExecutionMode } from "./cursorCli.js";
+
+export type { CursorExecutionMode } from "./cursorCli.js";
+
+/** How Cursor's internal tool calls are surfaced to the client. */
+export type ToolActivity = "reasoning" | "off";
 
 export type BridgeConfig = {
   agentBin: string;
@@ -11,13 +16,23 @@ export type BridgeConfig = {
   mode: CursorExecutionMode;
   force: boolean;
   approveMcps: boolean;
+  trust: boolean;
   strictModel: boolean;
   workspace: string;
+  /** Per-request Cursor CLI timeout; 0 disables it. */
   timeoutMs: number;
+  toolActivity: ToolActivity;
+  maxBodyBytes: number;
+  /** Extra hostnames accepted in the Host header ("*" accepts any). */
+  allowedHosts: string[];
 };
 
-function envBool(name: string, defaultValue: boolean): boolean {
-  const raw = process.env[name];
+export type BridgeConfigOverrides = Partial<Pick<BridgeConfig, "host" | "port" | "workspace" | "mode">>;
+
+export const DEFAULT_PORT = 8765;
+export const DEFAULT_HOST = "127.0.0.1";
+
+function envBool(raw: string | undefined, defaultValue: boolean): boolean {
   if (raw == null) return defaultValue;
   const v = raw.trim().toLowerCase();
   if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
@@ -25,67 +40,48 @@ function envBool(name: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
-function envNumber(name: string, defaultValue: number): number {
-  const raw = process.env[name];
-  if (raw == null) return defaultValue;
+function envInt(raw: string | undefined, defaultValue: number, min: number, max = Number.MAX_SAFE_INTEGER): number {
+  if (raw == null || raw.trim() === "") return defaultValue;
   const n = Number(raw);
-  return Number.isFinite(n) ? n : defaultValue;
+  return Number.isInteger(n) && n >= min && n <= max ? n : defaultValue;
 }
 
-function normalizeMode(raw: string | undefined): CursorExecutionMode {
+export function parseMode(raw: string | undefined): CursorExecutionMode | undefined {
   const m = (raw || "").trim().toLowerCase();
-  if (m === "ask" || m === "plan" || m === "agent") return m;
-  // Default to ask mode when acting as an OpenAI-compatible provider.
-  return "ask";
+  return m === "ask" || m === "plan" || m === "agent" ? m : undefined;
 }
 
-function normalizeModelId(raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  const parts = trimmed.split("/");
-  return parts[parts.length - 1] || undefined;
+export function parsePort(raw: string | undefined): number | undefined {
+  if (raw == null || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 && n <= 65_535 ? n : undefined;
 }
 
-function getAgentBin(): string {
-  return (
-    process.env.CURSOR_AGENT_BIN ||
-    process.env.CURSOR_CLI_BIN ||
-    process.env.CURSOR_CLI_PATH ||
-    "agent"
-  );
-}
-
-function getHost(): string {
-  return process.env.CURSOR_BRIDGE_HOST || "127.0.0.1";
-}
-
-function getPort(): number {
-  const n = envNumber("CURSOR_BRIDGE_PORT", 8765);
-  return Number.isFinite(n) && n > 0 ? n : 8765;
-}
-
-function getRequiredKey(): string | undefined {
-  return process.env.CURSOR_BRIDGE_API_KEY;
-}
-
-function getWorkspace(): string {
-  const raw = process.env.CURSOR_BRIDGE_WORKSPACE;
-  return raw ? path.resolve(raw) : process.cwd();
-}
-
-export function loadBridgeConfig(): BridgeConfig {
+export function loadBridgeConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: BridgeConfigOverrides = {},
+): BridgeConfig {
+  const workspace = overrides.workspace ?? env.CURSOR_BRIDGE_WORKSPACE;
+  const envPort = parsePort(env.CURSOR_BRIDGE_PORT);
   return {
-    agentBin: getAgentBin(),
-    host: getHost(),
-    port: getPort(),
-    requiredKey: getRequiredKey(),
-    defaultModel: normalizeModelId(process.env.CURSOR_BRIDGE_DEFAULT_MODEL) || "auto",
-    mode: normalizeMode(process.env.CURSOR_BRIDGE_MODE),
-    force: envBool("CURSOR_BRIDGE_FORCE", false),
-    approveMcps: envBool("CURSOR_BRIDGE_APPROVE_MCPS", false),
-    strictModel: envBool("CURSOR_BRIDGE_STRICT_MODEL", true),
-    workspace: getWorkspace(),
-    timeoutMs: envNumber("CURSOR_BRIDGE_TIMEOUT_MS", 300_000),
+    agentBin: resolveAgentBin(env),
+    host: overrides.host || env.CURSOR_BRIDGE_HOST || DEFAULT_HOST,
+    port: overrides.port ?? (envPort ? envPort : DEFAULT_PORT),
+    requiredKey: env.CURSOR_BRIDGE_API_KEY || undefined,
+    defaultModel: normalizeModelId(env.CURSOR_BRIDGE_DEFAULT_MODEL) || "auto",
+    // Ask mode keeps Cursor read-only, which is what a model provider should be.
+    mode: overrides.mode ?? parseMode(env.CURSOR_BRIDGE_MODE) ?? "ask",
+    force: envBool(env.CURSOR_BRIDGE_FORCE, false),
+    approveMcps: envBool(env.CURSOR_BRIDGE_APPROVE_MCPS, false),
+    trust: envBool(env.CURSOR_BRIDGE_TRUST, true),
+    strictModel: envBool(env.CURSOR_BRIDGE_STRICT_MODEL, true),
+    workspace: workspace ? path.resolve(workspace) : process.cwd(),
+    timeoutMs: envInt(env.CURSOR_BRIDGE_TIMEOUT_MS, 300_000, 0),
+    toolActivity: env.CURSOR_BRIDGE_TOOL_ACTIVITY?.trim().toLowerCase() === "off" ? "off" : "reasoning",
+    maxBodyBytes: envInt(env.CURSOR_BRIDGE_MAX_BODY_BYTES, 32 * 1024 * 1024, 1024),
+    allowedHosts: (env.CURSOR_BRIDGE_ALLOWED_HOSTS || "")
+      .split(",")
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean),
   };
 }

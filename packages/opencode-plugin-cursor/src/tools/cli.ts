@@ -2,386 +2,275 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
-import { tool } from "@opencode-ai/plugin";
-
-import { parseModelList } from "../lib/models.js";
-import { run } from "../lib/process.js";
+import { tool, type ToolContext } from "@opencode-ai/plugin";
 import {
-  formatStreamJsonSummary,
-  parseStreamJsonOutput,
-} from "../lib/streamJson.js";
+  buildPrintArgs,
+  classifyCursorFailure,
+  CommandNotFoundError,
+  CURSOR_CLI_HINT,
+  describeExit,
+  run,
+  succeeded,
+  type RunResult,
+} from "cursor-openai-bridge";
 
-export function createCliTools(args: {
+import { git, snapshotWorkingTree } from "../lib/git.js";
+import { discoverModels } from "../lib/models.js";
+import { formatRunSummary, summarizeStreamJson } from "../lib/streamJson.js";
+
+type CliToolsArgs = {
   agentBin: string;
+  /** Project directory OpenCode was opened in. */
   cwd: string;
+  /** Root of the git worktree, when the project is a git repository. */
   repoRoot?: string;
-}) {
+};
+
+const timeoutArg = () =>
+  tool.schema.number().int().positive().optional().describe("Timeout in ms for the Cursor CLI call (optional)");
+
+function failureHint(output: string): string {
+  switch (classifyCursorFailure(output)) {
+    case "auth":
+      return "\nHint: authenticate with `agent login` or set CURSOR_API_KEY.";
+    case "usage_limit":
+      return "\nHint: your Cursor usage limit is reached; try another model or wait for the limit to reset.";
+    case "model":
+      return "\nHint: list valid model IDs with cursor_cli_models.";
+    default:
+      return "";
+  }
+}
+
+async function runCursor(agentBin: string, args: string[], opts: Parameters<typeof run>[2]): Promise<RunResult> {
+  try {
+    return await run(agentBin, args, opts);
+  } catch (err) {
+    if (err instanceof CommandNotFoundError) throw new Error(`${err.message}. ${CURSOR_CLI_HINT}`);
+    throw err;
+  }
+}
+
+function ensureSucceeded(label: string, result: RunResult) {
+  if (succeeded(result)) return;
+  if (result.aborted) throw new Error(`${label} was cancelled.`);
+  const output = (result.stderr || result.stdout).trim();
+  throw new Error(`${label} ${describeExit(result)}.${output ? `\n${output}` : ""}${failureHint(output)}`);
+}
+
+function directoryOf(context: ToolContext, fallback: string): string {
+  // Newer OpenCode versions pass the session directory on the tool context.
+  const dir = (context as { directory?: unknown }).directory;
+  return typeof dir === "string" && dir ? dir : fallback;
+}
+
+export function createCliTools(args: CliToolsArgs) {
   return {
     cursor_cli_status: tool({
-      description: "Show Cursor CLI authentication/status (agent status).",
-      args: {
-        timeoutMs: tool.schema
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("Timeout in ms for the Cursor CLI call (optional)"),
-      },
-      async execute(toolArgs) {
-        const res = await run(args.agentBin, ["status"], {
-          cwd: args.cwd,
+      description: "Show Cursor CLI authentication status (agent status).",
+      args: { timeoutMs: timeoutArg() },
+      async execute(toolArgs, context) {
+        const res = await runCursor(args.agentBin, ["status"], {
+          cwd: directoryOf(context, args.cwd),
           timeoutMs: toolArgs.timeoutMs ?? 60_000,
+          signal: context.abort,
         });
-        if (res.code !== 0) {
-          throw new Error(
-            `Cursor CLI status failed (exit ${res.code}).\n${res.stderr.trim()}`,
-          );
-        }
+        ensureSucceeded("agent status", res);
         return res.stdout.trim();
       },
     }),
 
     cursor_cli_models: tool({
-      description: "List all models available to Cursor CLI (agent --list-models).",
+      description: "List the model IDs Cursor CLI can use (agent --list-models).",
       args: {
-        // Keep args empty for now; future: `raw`, `filter`, etc.
+        refresh: tool.schema.boolean().optional().describe("Bypass the short-lived model cache"),
       },
-      async execute() {
-        const res = await run(args.agentBin, ["--list-models"], {
-          cwd: args.cwd,
-          timeoutMs: 60_000,
-        });
-        if (res.code !== 0) {
-          const hint =
-            res.stderr.includes("Not authenticated") ||
-            res.stderr.toLowerCase().includes("login")
-              ? "Try: agent login (browser auth) or set CURSOR_API_KEY"
-              : "";
-          throw new Error(
-            `Failed to run Cursor CLI (agent --list-models). ${hint}\n` +
-              `stderr: ${res.stderr.trim()}`,
+      async execute(toolArgs) {
+        try {
+          const models = await discoverModels(args.agentBin, { force: toolArgs.refresh ?? false });
+          return JSON.stringify(
+            {
+              models: models.map((m) => ({
+                id: m.id,
+                name: m.name,
+                ...(m.isDefault ? { default: true } : {}),
+                ...(m.isCurrent ? { current: true } : {}),
+              })),
+            },
+            null,
+            2,
           );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          throw new Error(`Could not list Cursor models: ${message}${failureHint(message)}`);
         }
-
-        const models = parseModelList(res.stdout);
-        if (models.length === 0) {
-          throw new Error("Cursor CLI returned no models. Try running: agent --list-models");
-        }
-
-        return JSON.stringify({ models }, null, 2);
       },
     }),
 
     cursor_cli_run: tool({
-      description: "Run Cursor CLI (agent) in --print mode and return the final text.",
+      description:
+        "Run Cursor CLI (agent) headlessly with a prompt and return its answer. Defaults to read-only ask mode.",
       args: {
         prompt: tool.schema.string().describe("Prompt to send to Cursor CLI"),
-        mode: tool.schema
-          .enum(["ask", "plan", "agent"])
-          .optional()
-          .describe("Cursor CLI mode (default: ask)"),
-        model: tool.schema
-          .string()
-          .optional()
-          .describe("Cursor model ID (optional, e.g. gpt-5.2)"),
+        mode: tool.schema.enum(["ask", "plan", "agent"]).optional().describe("Cursor CLI mode (default: ask)"),
+        model: tool.schema.string().optional().describe("Cursor model ID (optional, e.g. gpt-5.2)"),
         outputFormat: tool.schema
           .enum(["text", "json", "stream-json"])
           .optional()
-          .describe(
-            "Cursor CLI output format (default: text). Use stream-json to see tool calls and intermediate steps.",
-          ),
+          .describe("Output format (default: text). stream-json adds a summary of Cursor's tool calls."),
         force: tool.schema
           .boolean()
           .optional()
-          .describe(
-            "If true, passes --force. This can enable writes/commands in print mode; use Cursor CLI permissions to constrain.",
-          ),
-        timeoutMs: tool.schema
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("Timeout in ms for the Cursor CLI call (optional)"),
+          .describe("Pass --force so Cursor may edit files and run commands without asking. Use with care."),
+        timeoutMs: timeoutArg(),
       },
-      async execute(toolArgs) {
+      async execute(toolArgs, context) {
         const mode = toolArgs.mode ?? "ask";
         const outputFormat = toolArgs.outputFormat ?? "text";
-        const force = toolArgs.force ?? false;
-
-        const cmdArgs: string[] = ["--print"];
-
-        // Cursor CLI only accepts --mode=ask|plan. "agent" is the default when --mode is omitted.
-        if (mode !== "agent") {
-          cmdArgs.push("--mode", mode);
-        }
-
-        cmdArgs.push("--workspace", args.cwd);
-        cmdArgs.push("--output-format", outputFormat);
-
-        if (toolArgs.model) {
-          cmdArgs.push("--model", toolArgs.model);
-        }
-
-        if (force) {
-          cmdArgs.push("--force");
-        }
-
-        cmdArgs.push(toolArgs.prompt);
-
-        const res = await run(args.agentBin, cmdArgs, {
-          cwd: args.cwd,
-          timeoutMs: toolArgs.timeoutMs,
-        });
-        if (res.code !== 0) {
-          throw new Error(
-            `Cursor CLI failed (exit ${res.code}).\n` + `stderr: ${res.stderr.trim()}`,
-          );
-        }
-
-        if (outputFormat === "stream-json") {
-          const summary = parseStreamJsonOutput(res.stdout);
-          return formatStreamJsonSummary(summary);
-        }
-
+        const cwd = directoryOf(context, args.cwd);
+        context.metadata({ title: `Cursor ${mode}${toolArgs.model ? ` (${toolArgs.model})` : ""}` });
+        const res = await runCursor(
+          args.agentBin,
+          buildPrintArgs({
+            mode,
+            model: toolArgs.model,
+            workspace: cwd,
+            outputFormat,
+            force: toolArgs.force ?? false,
+            trust: true,
+          }),
+          { cwd, input: toolArgs.prompt, timeoutMs: toolArgs.timeoutMs, signal: context.abort },
+        );
+        ensureSucceeded("Cursor CLI", res);
+        if (outputFormat === "stream-json") return formatRunSummary(summarizeStreamJson(res.stdout));
         return res.stdout.trim();
       },
     }),
 
     cursor_cli_patch: tool({
-      description: "Run Cursor CLI in an isolated git worktree and return a unified diff patch.",
+      description:
+        "Run Cursor CLI in an isolated git worktree and return its changes as a unified diff (inside <patch>). " +
+        "Your working tree is not modified unless apply is true.",
       args: {
-        prompt: tool.schema
-          .string()
-          .describe("Task prompt. Cursor will apply changes inside a temp worktree."),
-        model: tool.schema
-          .string()
-          .optional()
-          .describe("Cursor model ID (optional, e.g. gpt-5.2)"),
+        prompt: tool.schema.string().describe("Task prompt. Cursor applies changes inside a temporary worktree."),
+        model: tool.schema.string().optional().describe("Cursor model ID (optional, e.g. gpt-5.2)"),
         mode: tool.schema
           .enum(["agent", "plan", "ask"])
           .optional()
-          .describe("Cursor CLI mode (default: agent)")
-          .default("agent"),
+          .describe("Cursor CLI mode (default: agent; ask/plan cannot edit files)"),
         allowDirty: tool.schema
           .boolean()
           .optional()
           .describe(
-            "If true, runs even when the main repo has uncommitted changes (not recommended).",
+            "Run even with uncommitted changes. Cursor then works on a snapshot of your current files " +
+              "(including untracked ones), so the patch applies on top of them.",
           ),
-        keepTemp: tool.schema
+        apply: tool.schema
           .boolean()
           .optional()
-          .describe(
-            "If true, do not remove temp worktree directory (for debugging).",
-          ),
-        timeoutMs: tool.schema
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("Timeout in ms for the Cursor CLI call (optional)"),
+          .describe("Apply the resulting patch to your working tree with `git apply` (default: false)."),
+        keepTemp: tool.schema.boolean().optional().describe("Keep the temporary worktree for debugging"),
+        timeoutMs: timeoutArg(),
       },
-      async execute(toolArgs) {
-        if (!args.repoRoot) {
-          throw new Error("cursor_cli_patch requires a git repository (no worktree detected).");
-        }
-
-        const allowDirty = toolArgs.allowDirty ?? false;
-        const keepTemp = toolArgs.keepTemp ?? false;
+      async execute(toolArgs, context) {
+        const repoRoot = args.repoRoot;
+        if (!repoRoot) throw new Error("cursor_cli_patch requires a git repository (no worktree detected).");
+        const signal = context.abort;
         const mode = toolArgs.mode ?? "agent";
 
-        // Enforce clean working tree by default for correct patching.
-        const status = await run("git", ["status", "--porcelain"], {
-          cwd: args.repoRoot,
-          timeoutMs: 30_000,
-        });
-
-        if (status.code !== 0) {
+        const status = await git(["status", "--porcelain"], repoRoot, { signal });
+        const dirty = status.trim().length > 0;
+        if (dirty && !toolArgs.allowDirty) {
           throw new Error(
-            `git status failed.\n${status.stderr.trim() || status.stdout.trim()}`,
+            "The working tree has uncommitted changes. Commit or stash them, or pass allowDirty: true " +
+              "to let Cursor work on a snapshot of your current files.",
           );
         }
 
-        if (!allowDirty && status.stdout.trim().length > 0) {
-          throw new Error(
-            "Working tree is not clean. Commit/stash changes (or pass allowDirty=true).",
-          );
-        }
-
-        const tempBase = await mkdtemp(path.join(tmpdir(), "cursor-opencode-worktree-"));
-        const tempDir = tempBase;
-
+        const scratch = await mkdtemp(path.join(tmpdir(), "cursor-opencode-patch-"));
+        const worktree = path.join(scratch, "worktree");
+        let added = false;
         try {
-          // Create detached worktree from current HEAD.
-          const wtAdd = await run(
-            "git",
-            ["worktree", "add", "--detach", tempDir, "HEAD"],
-            { cwd: args.repoRoot, timeoutMs: 60_000 },
+          const base = dirty ? await snapshotWorkingTree(repoRoot, scratch, signal) : "HEAD";
+          await git(["worktree", "add", "--detach", worktree, base], repoRoot, { signal });
+          added = true;
+
+          context.metadata({ title: `Cursor patch (${mode})` });
+          const cursorRes = await runCursor(
+            args.agentBin,
+            buildPrintArgs({
+              mode,
+              model: toolArgs.model,
+              workspace: worktree,
+              outputFormat: "stream-json",
+              force: true,
+              trust: true,
+            }),
+            { cwd: worktree, input: toolArgs.prompt, timeoutMs: toolArgs.timeoutMs, signal },
           );
+          ensureSucceeded("Cursor CLI (in temporary worktree)", cursorRes);
 
-          if (wtAdd.code !== 0) {
-            throw new Error(
-              `git worktree add failed.\n${wtAdd.stderr.trim() || wtAdd.stdout.trim()}`,
-            );
-          }
+          await git(["add", "-A"], worktree, { signal });
+          const diffArgs = ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
+          const patch = (await git([...diffArgs, "--binary"], worktree, { signal })).trimEnd();
+          const files = (await git([...diffArgs, "--name-status"], worktree, { signal })).trim();
 
-          const cmdArgs: string[] = ["--print", "--force", "--output-format", "stream-json"];
-          // Cursor CLI only accepts --mode=ask|plan. "agent" is the default when --mode is omitted.
-          if (mode !== "agent") cmdArgs.push("--mode", mode);
-          if (toolArgs.model) cmdArgs.push("--model", toolArgs.model);
-          cmdArgs.push(toolArgs.prompt);
-
-          const cursorRes = await run(args.agentBin, cmdArgs, {
-            cwd: tempDir,
-            timeoutMs: toolArgs.timeoutMs,
-          });
-
-          if (cursorRes.code !== 0) {
-            throw new Error(
-              `Cursor CLI failed inside worktree (exit ${cursorRes.code}).\n` +
-                `stderr: ${cursorRes.stderr.trim()}`,
-            );
-          }
-
-          // Include untracked files in diff.
-          const addIntent = await run("git", ["add", "-N", "."], {
-            cwd: tempDir,
-            timeoutMs: 60_000,
-          });
-          if (addIntent.code !== 0) {
-            throw new Error(
-              `git add -N failed.\n${addIntent.stderr.trim() || addIntent.stdout.trim()}`,
-            );
-          }
-
-          const diff = await run("git", ["diff", "--patch", "--binary"], {
-            cwd: tempDir,
-            timeoutMs: 60_000,
-          });
-
-          if (diff.code !== 0) {
-            throw new Error(
-              `git diff failed.\n${diff.stderr.trim() || diff.stdout.trim()}`,
-            );
-          }
-
-          const nameStatus = await run("git", ["diff", "--name-status"], {
-            cwd: tempDir,
-            timeoutMs: 60_000,
-          });
-
-          const patchText = diff.stdout.trimEnd();
-          const fileSummary = nameStatus.code === 0 ? nameStatus.stdout.trim() : "";
-
-          // Parse stream-json output for structured activity report.
-          const parsed = parseStreamJsonOutput(cursorRes.stdout);
-          const activityText = formatStreamJsonSummary(parsed);
-
-          if (!patchText) {
-            return [
-              "<cursor_cli_patch>",
-              "<message>Cursor completed, but produced no git diff (no changes).</message>",
-              fileSummary ? `<summary>\n${fileSummary}\n</summary>` : "",
-              activityText
-                ? `<cursor_activity>\n${activityText}\n</cursor_activity>`
-                : "",
-              cursorRes.stderr.trim()
-                ? `<cursor_stderr>\n${cursorRes.stderr.trim()}\n</cursor_stderr>`
-                : "",
-              "</cursor_cli_patch>",
-            ]
-              .filter(Boolean)
-              .join("\n");
-          }
-
-          return [
-            "<cursor_cli_patch>",
-            fileSummary ? `<summary>\n${fileSummary}\n</summary>` : "",
-            activityText
-              ? `<cursor_activity>\n${activityText}\n</cursor_activity>`
-              : "",
-            cursorRes.stderr.trim()
-              ? `<cursor_stderr>\n${cursorRes.stderr.trim()}\n</cursor_stderr>`
-              : "",
-            "<patch>",
-            patchText,
-            "</patch>",
-            "</cursor_cli_patch>",
-          ]
-            .filter(Boolean)
-            .join("\n");
-        } finally {
-          if (!keepTemp) {
-            // Remove worktree entry; may need force due to modifications.
-            const rmRes = await run("git", ["worktree", "remove", tempDir], {
-              cwd: args.repoRoot,
-              timeoutMs: 60_000,
-            });
-            if (rmRes.code !== 0) {
-              await run("git", ["worktree", "remove", "--force", tempDir], {
-                cwd: args.repoRoot,
-                timeoutMs: 60_000,
-              });
+          const activity = formatRunSummary(summarizeStreamJson(cursorRes.stdout));
+          const stderr = cursorRes.stderr.trim();
+          const parts = ["<cursor_cli_patch>"];
+          if (!patch) parts.push("<message>Cursor completed, but produced no changes.</message>");
+          if (files) parts.push(`<summary>\n${files}\n</summary>`);
+          if (activity) parts.push(`<cursor_activity>\n${activity}\n</cursor_activity>`);
+          if (stderr) parts.push(`<cursor_stderr>\n${stderr}\n</cursor_stderr>`);
+          if (patch) {
+            if (toolArgs.apply) {
+              await git(["apply", "--whitespace=nowarn", "-"], repoRoot, { input: `${patch}\n`, signal });
+              parts.push("<applied>The patch was applied to your working tree.</applied>");
             }
-            await rm(tempDir, { recursive: true, force: true });
+            parts.push("<patch>", patch, "</patch>");
+          }
+          if (toolArgs.keepTemp) parts.push(`<worktree>${worktree}</worktree>`);
+          parts.push("</cursor_cli_patch>");
+          return parts.join("\n");
+        } finally {
+          if (!toolArgs.keepTemp) {
+            if (added) {
+              await git(["worktree", "remove", "--force", worktree], repoRoot).catch(() => undefined);
+            }
+            await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+            await git(["worktree", "prune"], repoRoot).catch(() => undefined);
           }
         }
       },
     }),
 
     cursor_cli_mcp_list: tool({
-      description:
-        "List MCP servers configured in Cursor CLI (agent mcp list).",
-      args: {
-        timeoutMs: tool.schema
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("Timeout in ms (optional)"),
-      },
-      async execute(toolArgs) {
-        const res = await run(args.agentBin, ["mcp", "list"], {
-          cwd: args.cwd,
+      description: "List MCP servers configured in Cursor CLI (agent mcp list).",
+      args: { timeoutMs: timeoutArg() },
+      async execute(toolArgs, context) {
+        const res = await runCursor(args.agentBin, ["mcp", "list"], {
+          cwd: directoryOf(context, args.cwd),
           timeoutMs: toolArgs.timeoutMs ?? 60_000,
+          signal: context.abort,
         });
-        if (res.code !== 0) {
-          throw new Error(
-            `agent mcp list failed (exit ${res.code}).\n${res.stderr.trim()}`,
-          );
-        }
+        ensureSucceeded("agent mcp list", res);
         return res.stdout.trim();
       },
     }),
 
     cursor_cli_mcp_tools: tool({
-      description:
-        "List tools provided by a specific MCP server in Cursor CLI (agent mcp list-tools <server>).",
+      description: "List tools provided by an MCP server configured in Cursor CLI (agent mcp list-tools <server>).",
       args: {
-        serverName: tool.schema
-          .string()
-          .describe("Name of the MCP server to inspect"),
-        timeoutMs: tool.schema
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("Timeout in ms (optional)"),
+        serverName: tool.schema.string().describe("Name of the MCP server to inspect"),
+        timeoutMs: timeoutArg(),
       },
-      async execute(toolArgs) {
-        const res = await run(
-          args.agentBin,
-          ["mcp", "list-tools", toolArgs.serverName],
-          {
-            cwd: args.cwd,
-            timeoutMs: toolArgs.timeoutMs ?? 60_000,
-          },
-        );
-        if (res.code !== 0) {
-          throw new Error(
-            `agent mcp list-tools failed (exit ${res.code}).\n${res.stderr.trim()}`,
-          );
-        }
+      async execute(toolArgs, context) {
+        const res = await runCursor(args.agentBin, ["mcp", "list-tools", toolArgs.serverName], {
+          cwd: directoryOf(context, args.cwd),
+          timeoutMs: toolArgs.timeoutMs ?? 60_000,
+          signal: context.abort,
+        });
+        ensureSucceeded("agent mcp list-tools", res);
         return res.stdout.trim();
       },
     }),

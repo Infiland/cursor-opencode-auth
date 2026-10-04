@@ -1,14 +1,38 @@
 {
   "name": "cursor-openai-bridge",
-  "version": "0.2.0",
-  "private": true,
+  "version": "0.3.0",
+  "description": "Local OpenAI-compatible API server backed by Cursor CLI (agent)",
+  "license": "MIT",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cli": "./dist/cli.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "cursor-openai-bridge": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "cursor",
+    "cursor-cli",
+    "openai",
+    "opencode"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p tsconfig.test.json && node --test --test-reporter=spec \"dist-test/test/**/*.test.js\"",
     "start": "node ./dist/cli.js"
   },
   "devDependencies": {
