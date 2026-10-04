@@ -1,182 +1,128 @@
-# Setting Up cursor-opencode-auth on WSL2
+# Setting up cursor-opencode-auth on WSL2
 
-This guide provides step-by-step instructions for setting up cursor-opencode-auth on WSL2, with special considerations for corporate environments (Zscaler, proxies, etc.).
+Step-by-step setup on WSL2, including fixes for corporate networks (Zscaler, proxies, and similar).
 
-## Table of Contents
+## Contents
 
 - [Prerequisites](#prerequisites)
-- [Known Issues & Fixes](#known-issues--fixes)
+- [Known issues and fixes](#known-issues-and-fixes)
 - [Installation](#installation)
-- [Configuration](#configuration)
-- [Verification](#verification)
+- [OpenCode 2.0 setup](#opencode-20-setup)
+- [OpenCode 1.x setup](#opencode-1x-setup)
 - [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
 
 - WSL2 (Ubuntu or Debian recommended)
-- A Cursor Pro subscription
-- Basic familiarity with the terminal
+- A Cursor subscription
+- Node.js 22 or newer inside WSL (`node --version`)
 
-## Known Issues & Fixes
+## Known issues and fixes
 
-### IPv6 Networking Issues in WSL2 + Corporate Environments
+### IPv6 networking in WSL2 behind corporate SSL inspection
 
-**Background**: In WSL2 environments with corporate SSL inspection (e.g., Zscaler), IPv6 may be enabled at the kernel level but completely non-functional. Bun (which OpenCode is built on) and Node.js will resolve DNS to both IPv6 and IPv4 addresses but may only attempt IPv6 connections, which can black-hole and hang indefinitely.
+**Background.** In WSL2 with corporate SSL inspection (for example Zscaler), IPv6 can be enabled in the kernel but not work at all. Bun (which OpenCode runs on) and Node.js resolve both IPv6 and IPv4 addresses but may only try IPv6, which can hang indefinitely.
 
-**Symptoms**:
-- `bun install` hangs indefinitely
+**Symptoms:**
+
+- `bun install` or `npm install` hangs or times out
 - `opencode run` hangs on startup
-- `npm install` takes extremely long or times out
-- Bridge server fails to start or connect
+- the bridge fails to start or to connect
 
-**Check if this affects you**:
+**Check whether this affects you:**
 
 ```bash
-# Check for Zscaler or corporate SSL inspection certificate
+# Corporate SSL inspection certificate?
 ls /etc/ssl/certs/ | grep -i zscaler
 
-# Check if IPv6 is enabled
+# Is IPv6 enabled? "0" means yes
 sysctl net.ipv6.conf.all.disable_ipv6
-# If output is "0", IPv6 is enabled
 ```
 
-**Fix**: Disable IPv6 in WSL2
+**Fix: disable IPv6 in WSL2.**
 
 ```bash
-# Add IPv6 disable rules to sysctl
 echo 'net.ipv6.conf.all.disable_ipv6 = 1' | sudo tee -a /etc/sysctl.conf
 echo 'net.ipv6.conf.default.disable_ipv6 = 1' | sudo tee -a /etc/sysctl.conf
-
-# Apply changes
 sudo sysctl -p
 
-# Verify
+# Verify: should print "net.ipv6.conf.all.disable_ipv6 = 1"
 sysctl net.ipv6.conf.all.disable_ipv6
-# Should output: net.ipv6.conf.all.disable_ipv6 = 1
 ```
 
-**Important**: Apply this fix **before** installing Bun or OpenCode to avoid initial setup issues.
+Apply this **before** installing OpenCode to avoid setup problems.
 
 ## Installation
 
-### 1. Install Cursor CLI
+### 1. Install Cursor CLI and log in
 
 ```bash
 curl https://cursor.com/install -fsS | bash
-```
-
-Restart your shell or run:
-
-```bash
 exec $SHELL
+
+agent --version
+agent login        # browser-based login
+agent status       # should show that you are logged in
 ```
 
-Verify installation:
+Older installs name the command `cursor-agent`; if `agent` is not found, use that name, or set `CURSOR_AGENT_BIN` to its path for the plugin.
+
+### 2. Install OpenCode
+
+Follow the instructions on [opencode.ai](https://opencode.ai). For OpenCode 2.0 via npm:
 
 ```bash
-cursor-agent --version
-```
-
-### 2. Authenticate with Cursor
-
-```bash
-cursor-agent login
-```
-
-Follow the browser-based authentication flow. Verify you're logged in:
-
-```bash
-cursor-agent status
-```
-
-### 3. Install Bun (if not already installed)
-
-```bash
-curl -fsSL https://bun.sh/install | bash
-```
-
-Restart your shell:
-
-```bash
-exec $SHELL
-```
-
-Verify:
-
-```bash
-bun --version
-```
-
-> **Note**: If `bun --version` hangs, you need to apply the IPv6 fix from the "Known Issues" section above.
-
-### 4. Install OpenCode
-
-```bash
-bun install -g opencode-ai
-```
-
-Verify:
-
-```bash
+npm install -g @opencode/cli
 opencode --version
 ```
 
-> **Important**: If you have an older version installed via Homebrew/Linuxbrew (v0.x), remove it first:
->
-> ```bash
-> brew uninstall opencode
-> which opencode  # Should be ~/.bun/bin/opencode
-> opencode --version  # Should be 1.x.x
-> ```
+If `opencode --version` shows an old version, an earlier install (for example from Homebrew/Linuxbrew) is first on your `PATH`; remove it (`brew uninstall opencode`) and check `which opencode`.
 
-### 5. Build cursor-opencode-auth
+### 3. Build cursor-opencode-auth
 
-Clone and build this repository:
+Clone it to a permanent location (not `/tmp`):
 
 ```bash
-# Choose a permanent location (NOT /tmp)
-cd ~/projects  # or your preferred location
+mkdir -p ~/projects && cd ~/projects
 git clone https://github.com/Infiland/cursor-opencode-auth.git
 cd cursor-opencode-auth
-
-# Build the project
-npm install
-npm --workspaces run build
+npm ci
+npm run build
 ```
 
-## Configuration
+## OpenCode 2.0 setup
 
-### 1. Install the OpenCode Plugin
-
-Create the plugin configuration file:
+Create the plugin file (adjust the path to your checkout):
 
 ```bash
 mkdir -p ~/.config/opencode/plugins
+cat > ~/.config/opencode/plugins/cursor.ts << EOF
+export { default } from "$HOME/projects/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js";
+EOF
 ```
 
-Create `~/.config/opencode/plugins/cursor-opencode-auth.ts` with the following content (adjust path to match your installation):
-
-```typescript
-// Uses your local checkout instead of a cached npm install
-export { CursorPlugin } from "/home/YOUR_USERNAME/projects/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js";
-```
-
-Replace `/home/YOUR_USERNAME/projects/` with your actual path from step 5.
-
-### 2. Configure OpenCode Provider
-
-Get available Cursor models:
+That is all: OpenCode 2.0 gets the `cursor` provider and the tools from the plugin; no bridge and no provider configuration are needed. Check it:
 
 ```bash
-cursor-agent --list-models
+opencode models | grep cursor/
+opencode run -m cursor/auto "say hello"
 ```
 
-Create or update `~/.config/opencode/opencode.json`:
+If you set up OpenCode 1.x before, remove the `provider.cursor` block from `~/.config/opencode/opencode.json`: OpenCode 2.0 would otherwise send Cursor requests to the 1.x bridge.
+
+## OpenCode 1.x setup
+
+### 1. Install the plugin
+
+Create the same plugin file as for 2.0 (above).
+
+### 2. Configure the provider
+
+List the models with `agent --list-models`, then create or update `~/.config/opencode/opencode.json`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [],
   "provider": {
     "cursor": {
       "npm": "@ai-sdk/openai-compatible",
@@ -186,182 +132,58 @@ Create or update `~/.config/opencode/opencode.json`:
         "apiKey": "unused"
       },
       "models": {
-        "auto": { "name": "Auto (Cursor Default)" },
-        "gpt-5.3-codex": { "name": "GPT-5.3 Codex" },
+        "auto": { "name": "Auto" },
         "gpt-5.2": { "name": "GPT-5.2" },
-        "gpt-5.2-codex": { "name": "GPT-5.2 Codex" },
-        "opus-4.6-thinking": { "name": "Claude 4.6 Opus (Thinking)" },
-        "sonnet-4.5-thinking": { "name": "Claude 4.5 Sonnet (Thinking)" },
-        "opus-4.6": { "name": "Claude 4.6 Opus" }
+        "sonnet-4.5-thinking": { "name": "Claude 4.5 Sonnet (Thinking)" }
       }
     }
   }
 }
 ```
 
-> **Note**: You can add more models from the `cursor-agent --list-models` output.
+Add any other IDs from `agent --list-models`.
 
-### 3. Create a Bridge Launcher Script (Optional but Recommended)
+### 3. The bridge
 
-Create `~/.local/bin/cursor-bridge`:
+The plugin starts the bridge automatically when OpenCode starts. To run it yourself instead, create a launcher:
 
 ```bash
 mkdir -p ~/.local/bin
 cat > ~/.local/bin/cursor-bridge << 'EOF'
-#!/usr/bin/env node
-// Cursor OpenAI Bridge Launcher
-require('/home/YOUR_USERNAME/projects/cursor-opencode-auth/packages/cursor-openai-bridge/dist/cli.js');
+#!/usr/bin/env bash
+exec node "$HOME/projects/cursor-opencode-auth/packages/cursor-openai-bridge/dist/cli.js" "$@"
 EOF
-
 chmod +x ~/.local/bin/cursor-bridge
-```
 
-Replace `/home/YOUR_USERNAME/projects/` with your actual path.
-
-Ensure `~/.local/bin` is in your PATH:
-
-```bash
+# Make sure ~/.local/bin is on your PATH
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-## Verification
-
-### 1. Start the Bridge Server
+Start it and check it:
 
 ```bash
-cursor-bridge
+cursor-bridge                               # listens on http://127.0.0.1:8765
+curl http://127.0.0.1:8765/v1/models        # in another terminal
 ```
 
-Or if you didn't create the launcher script:
-
-```bash
-node ~/projects/cursor-opencode-auth/packages/cursor-openai-bridge/dist/cli.js
-```
-
-The bridge should start and listen on `http://127.0.0.1:8765`.
-
-### 2. Test the Bridge
-
-In another terminal:
-
-```bash
-curl http://127.0.0.1:8765/v1/models
-```
-
-You should see a JSON response with available models.
-
-### 3. Test OpenCode
+### 4. Verify
 
 ```bash
 opencode run -m cursor/gpt-5.2 "say hello"
+opencode run -m cursor/gpt-5.2 "What does README.md in this directory say?"
 ```
 
-### 4. Test Tool Calling
+For the second prompt, Cursor reads the file with its own tools (in ask mode, read-only) and answers; OpenCode's tools are not involved.
 
-```bash
-opencode run -m cursor/gpt-5.2 "read the file ~/.config/opencode/opencode.json and tell me what's in it"
-```
+### Running the bridge as a service
 
-This should successfully read the file and return its contents, demonstrating that tool calling works.
-
-## Troubleshooting
-
-### Bridge won't start or hangs
-
-**Cause**: IPv6 networking issues (see "Known Issues" section)
-
-**Solution**: Apply the IPv6 fix and restart the bridge
-
-### Port 8765 already in use
-
-**Cause**: Another instance of the bridge or another service is using the port
-
-**Solution**: Find and kill the process:
-
-```bash
-lsof -i :8765
-kill -9 <PID>
-```
-
-Or configure the bridge to use a different port via environment variable (update your `opencode.json` accordingly):
-
-```bash
-PORT=8766 cursor-bridge
-```
-
-### `opencode run` hangs but `opencode debug config` works
-
-**Cause**: Command is being run from a non-interactive shell without a TTY
-
-**Solution**: Run from a regular terminal session, not from a script or non-TTY environment
-
-### "No access token found" or authentication errors
-
-**Cause**: Cursor CLI is not authenticated
-
-**Solution**: Run `cursor-agent login` and complete the authentication flow
-
-### Tool calls not working
-
-**Cause**: Bridge is not running or OpenCode is not configured correctly
-
-**Solution**: 
-1. Verify bridge is running: `curl http://127.0.0.1:8765/v1/models`
-2. Check OpenCode config: `opencode debug config`
-3. Verify plugin is loaded correctly
-
-### Old version of OpenCode (v0.x)
-
-**Cause**: Stale Homebrew/Linuxbrew installation taking precedence
-
-**Solution**:
-```bash
-brew uninstall opencode
-which opencode  # Should be ~/.bun/bin/opencode
-opencode --version  # Should be 1.x.x
-```
-
-### Permission denied when starting bridge
-
-**Cause**: Script is not executable
-
-**Solution**:
-```bash
-chmod +x ~/.local/bin/cursor-bridge
-```
-
-## Advanced Configuration
-
-### Bridge Environment Variables
-
-You can customize the bridge behavior with environment variables:
-
-```bash
-# Change Cursor CLI mode (ask, plan, agent)
-CURSOR_BRIDGE_MODE=agent cursor-bridge
-
-# Set workspace directory
-CURSOR_BRIDGE_WORKSPACE=/path/to/project cursor-bridge
-
-# Force mode even if model suggests otherwise
-CURSOR_BRIDGE_FORCE=true cursor-bridge
-
-# Auto-approve MCPs (use with caution)
-CURSOR_BRIDGE_APPROVE_MCPS=true cursor-bridge
-
-# Disable strict model checking
-CURSOR_BRIDGE_STRICT_MODEL=false cursor-bridge
-```
-
-### Running Bridge as a Service
-
-For production use, consider creating a systemd service:
+The bridge can run under systemd instead (WSL needs systemd enabled: `[boot]` `systemd=true` in `/etc/wsl.conf`, then `wsl --shutdown` from Windows):
 
 ```bash
 sudo tee /etc/systemd/system/cursor-bridge.service << EOF
 [Unit]
-Description=Cursor OpenAI Bridge
+Description=Cursor OpenAI bridge
 After=network.target
 
 [Service]
@@ -376,52 +198,63 @@ WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable cursor-bridge
-sudo systemctl start cursor-bridge
+sudo systemctl enable --now cursor-bridge
 ```
 
-### Debug Logging
+The plugin finds a running bridge and uses it instead of starting its own.
 
-Enable debug logging for troubleshooting:
+## Troubleshooting
+
+### Commands or the bridge hang
+
+Usually the IPv6 issue above. Apply the fix and restart the bridge (or OpenCode).
+
+### `opencode run` hangs in scripts but works in a terminal
+
+OpenCode reads the message from stdin when stdin is not a terminal. Give it an empty stdin: `opencode run -m cursor/auto "say hello" < /dev/null`.
+
+### Port 8765 is already in use (1.x)
+
+Another bridge or service holds the port:
 
 ```bash
-# OpenCode debug logs
-opencode --print-logs --log-level DEBUG
-
-# Check OpenCode log directory
-ls -lh ~/.local/share/opencode/log/
+lsof -i :8765
 ```
 
-## Additional Notes
+Stop it, or run the bridge on another port and point `provider.cursor.options.baseURL` there:
 
-### Differences from yet-another-opencode-cursor-auth
+```bash
+cursor-bridge --port 8766          # or: CURSOR_BRIDGE_PORT=8766 cursor-bridge
+```
 
-If you previously used `yet-another-opencode-cursor-auth`:
+For the plugin to use (and autostart) a bridge on another port, start OpenCode with `CURSOR_BRIDGE_PORT=8766` as well.
 
-| Feature | yet-another-opencode-cursor-auth | cursor-opencode-auth (this repo) |
-|---------|----------------------------------|----------------------------------|
-| Tool Calling | ✅ Yes (direct API) | ✅ Yes (via bridge) |
-| Method | Direct Cursor API | Cursor CLI wrapper |
-| Auth | OAuth flow | cursor-agent login |
-| Models | Limited | All Cursor CLI models |
-| Modes | N/A | ask/plan/agent |
-| Setup | OAuth only | Install + configure |
+### "Cursor CLI is not authenticated"
 
-### Security Considerations
+Run `agent login` and finish the browser flow, or set `CURSOR_API_KEY` in the environment OpenCode runs in.
 
-- The bridge runs locally and does not expose your credentials to the network
-- Cursor CLI can read your repository - treat it as trusted code execution
-- Configure permissions in `~/.cursor/cli-config.json` or `<project>/.cursor/cli.json` to restrict Cursor CLI capabilities
-- See `docs/SECURITY.md` for detailed security considerations
+### No `cursor/` models, or Cursor requests fail
 
-## Getting Help
+1. `agent --list-models` must work in the same shell you start OpenCode from.
+2. OpenCode 2.0: only one copy of the plugin may be loaded (plugin file *or* a `plugins` entry), and no `provider.cursor` block may remain from 1.x.
+3. OpenCode 1.x: check the bridge with `curl http://127.0.0.1:8765/v1/models`, and its log in `~/.local/share/opencode/cursor-openai-bridge.log`.
+4. Look at OpenCode's logs: `ls -lh ~/.local/share/opencode/log/`, or run with `--print-logs --log-level debug`.
 
-If you encounter issues not covered in this guide:
+### Bridge settings
 
-1. Check the main [README.md](../README.md) and [docs/USAGE.md](USAGE.md)
-2. Review [docs/SECURITY.md](SECURITY.md) for safety considerations
-3. Open an issue on the [GitHub repository](https://github.com/Infiland/cursor-opencode-auth/issues)
+The bridge reads its settings from the environment, for example:
 
-## Contributing
+```bash
+CURSOR_BRIDGE_MODE=plan cursor-bridge                       # ask (default), plan, or agent
+CURSOR_BRIDGE_WORKSPACE=/path/to/project cursor-bridge      # project when the client sends none
+CURSOR_BRIDGE_STRICT_MODEL=false cursor-bridge              # send "auto" as requested
+```
 
-Found an issue with this guide or have suggestions for improvements? Please open a pull request or issue on GitHub.
+`CURSOR_BRIDGE_FORCE=true` lets Cursor run commands without asking (it matters with `agent` mode); use it with care. The full list is in [USAGE.md](USAGE.md#bridge).
+
+## Notes
+
+- If you used another Cursor integration for OpenCode before, remove its plugin and provider configuration first, so that only one `cursor` provider is defined.
+- The bridge listens on `127.0.0.1` only and does not expose your credentials. Cursor CLI can read your repository; restrict it with `~/.cursor/cli-config.json` or `<project>/.cursor/cli.json`. See [SECURITY.md](SECURITY.md).
+
+Other questions: see the [README](../README.md) and [USAGE.md](USAGE.md), or open an issue on [GitHub](https://github.com/Infiland/cursor-opencode-auth/issues).

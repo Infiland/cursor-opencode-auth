@@ -1,11 +1,24 @@
+// OpenCode 2.0: ~/.config/opencode/opencode.jsonc (or <project>/opencode.jsonc)
 {
-  "$schema": "https://opencode.ai/config.json",
-  // If using the npm plugin (after publishing):
-  // "plugin": ["opencode-plugin-cursor"],
+  "plugins": [
+    {
+      // A local checkout; use "opencode-plugin-cursor" once it is published to npm.
+      "package": "/abs/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor",
+      "options": {
+        // How Cursor runs for cursor/* models: "ask" (read-only, default), "plan" or "agent".
+        "mode": "ask",
+        // Register only these models instead of everything `agent --list-models` reports.
+        // "models": ["auto", "gpt-5.2", "sonnet-4.5"],
+        "timeoutMs": 300000
+      }
+    }
+  ],
 
-  // Safer defaults: require approval before invoking Cursor tools.
+  // Session titles with a small Cursor model (or: "title": { "disabled": true }).
+  // "agents": { "title": { "model": "cursor/haiku-4.5" } },
+
+  // OpenCode 2.0 cannot ask before plugin tools run; hide the ones you do not want.
   "permission": {
-    "cursor_cli_*": "ask",
-    "cursor_cloud_*": "ask"
+    "cursor_cloud_*": "deny"
   }
 }

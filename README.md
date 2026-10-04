@@ -2,187 +2,179 @@
 
 <img width="858" height="608" alt="image" src="https://github.com/user-attachments/assets/75a004ce-661f-4999-93d0-b45b9f9db6d0" />
 
-Community integration between Cursor and OpenCode.
+Use your Cursor subscription from [OpenCode](https://opencode.ai). Cursor models show up as an OpenCode provider (`cursor/<model>`), and OpenCode gets tools for handing work to Cursor CLI or Cursor Cloud Agents.
 
-This repo is intentionally built around *documented* Cursor surfaces:
+This project uses only *documented* Cursor surfaces:
 
-- Cursor CLI (`agent`) + its auth (`agent login` or `CURSOR_API_KEY`) and model list (`--list-models`)
-- Cursor Cloud Agents API (`https://api.cursor.com/v0/...`) for async remote agents
+- Cursor CLI (`agent`), its login (`agent login` or `CURSOR_API_KEY`) and its model list (`agent --list-models`)
+- the Cursor Cloud Agents API (`https://api.cursor.com/v0/...`)
 
-It does **not** attempt to reverse-engineer private Cursor endpoints.
+It does **not** reverse-engineer private Cursor endpoints.
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Infiland/cursor-opencode-auth&type=Date)](https://star-history.com/#Infiland/cursor-opencode-auth&Date)
 
-## What this enables
+## What you get
 
-- Use Cursor's model lineup (via Cursor CLI) *from inside* OpenCode as a callable tool.
-- Use Cursor models as an OpenCode provider (via a local OpenAI-compatible bridge) so OpenCode prompts consume Cursor usage.
-- Optionally delegate longer tasks to Cursor Cloud Agents and pull back the results.
+|                                     | OpenCode 2.0 (recommended)                                           | OpenCode 1.x                                                        |
+| ----------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| **Provider** (`cursor/<model>`)     | Built in: the plugin registers it and runs Cursor CLI in-process     | Through a local OpenAI-compatible bridge, which the plugin starts   |
+| **Model list**                      | Discovered from `agent --list-models` and cached                     | Listed by you in `opencode.json`                                    |
+| **Tools** (`cursor_cli_*`, `cursor_cloud_*`) | Yes, in the `cursor` tool namespace                         | Yes, plus `cursor_bridge_*`                                         |
 
-Important distinction:
+Every request to a `cursor/...` model runs Cursor CLI headlessly (`agent --print`) in your project, in read-only **ask** mode by default. Cursor reads your code with its own tools; its answer streams back into OpenCode, together with a one-line note for each tool Cursor used (shown as reasoning). Cursor cannot call OpenCode's tools. See [Known limitations](#known-limitations).
 
-- **Plugin tools** (`cursor_cli_*`, `cursor_cloud_*`) let OpenCode *call* Cursor.
-- **Provider** (`cursor/<model>`) lets OpenCode *use Cursor as the model*.
+## Requirements
 
-## Installation
+- Cursor CLI, logged in:
 
-> **WSL2 Users**: See [docs/WSL2_SETUP.md](docs/WSL2_SETUP.md) for detailed WSL2-specific setup instructions, including fixes for common issues like IPv6 networking problems in corporate environments.
+  ```bash
+  curl https://cursor.com/install -fsS | bash
+  agent login            # or: export CURSOR_API_KEY=...
+  agent --list-models    # check that it works
+  ```
 
-### Method 1 (recommended): paste this into OpenCode
+- OpenCode 2.0 (or 1.x)
+- Node.js 22+ and npm, to build this repository
 
-Copy/paste this whole block as a prompt in OpenCode:
+## Install
 
-```text
-Install the Cursor provider + tools from /path/to/cursor-opencode-auth.
-
-Requirements:
-- Use the existing local checkout at /path/to/cursor-opencode-auth (do not re-clone).
-- Ensure Cursor CLI is installed (agent). If not installed, install via: curl https://cursor.com/install -fsS | bash
-- Ensure Cursor CLI is authenticated. If not, tell me to run: agent login
-
-Steps:
-1) Build the repo:
-   - npm install
-   - npm --workspaces run build
-
-2) Install the OpenCode plugin (dev shim):
-   - Create ~/.config/opencode/plugins/cursor-opencode-auth.ts exporting CursorPlugin from:
-     /path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js
-
-3) Configure OpenCode to expose a provider named "cursor" that points at the local bridge:
-   - Update ~/.config/opencode/opencode.json to include:
-     provider.cursor.npm = "@ai-sdk/openai-compatible"
-     provider.cursor.options.baseURL = "http://127.0.0.1:8765/v1"
-     provider.cursor.options.apiKey = "unused"
-   - Populate provider.cursor.models by running: agent --list-models
-
-4) Verify:
-   - opencode models cursor
-   - In OpenCode, switch model to cursor/gpt-5.2 (or any Cursor model ID) and send a test prompt.
-
-If the provider cannot connect, use the plugin tool cursor_bridge_start and retry.
-```
-
-### Method 2: manual installation
-
-1) Install Cursor CLI and log in:
+The packages are not published to npm yet, so install from a checkout:
 
 ```bash
-curl https://cursor.com/install -fsS | bash
-agent login
-agent --list-models
+git clone https://github.com/Infiland/cursor-opencode-auth.git
+cd cursor-opencode-auth
+npm ci
+npm run build
 ```
 
-2) Build this repo:
+### OpenCode 2.0
+
+Load the plugin in **one** of these two ways (not both):
+
+- **Plugin file.** Create `~/.config/opencode/plugins/cursor.ts`:
+
+  ```ts
+  export { default } from "/abs/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js";
+  ```
+
+- **Config entry**, which can also take [options](#configuration). In `~/.config/opencode/opencode.jsonc`:
+
+  ```jsonc
+  {
+    "plugins": [
+      {
+        "package": "/abs/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor",
+        "options": { "mode": "ask" }
+      }
+    ]
+  }
+  ```
+
+Then check that the models are there and try one:
 
 ```bash
-cd /path/to/cursor-opencode-auth
-npm install
-npm --workspaces run build
+opencode models | grep cursor/
+opencode run -m cursor/auto "Summarize this repository"
 ```
 
-3) Install the OpenCode plugin (dev shim):
+No bridge and no provider block are needed. On the very first start only `cursor/auto` is listed until `agent --list-models` finishes in the background; after that the list is cached.
 
-Create `~/.config/opencode/plugins/cursor-opencode-auth.ts`:
+> **Upgrading from OpenCode 1.x?** Remove the `provider.cursor` block from your OpenCode config. OpenCode 2.0 still reads it, and it would send Cursor requests to the 1.x bridge (which nothing starts under 2.0) instead of the built-in provider.
 
-```ts
-// Uses your local checkout (v0.2.0+) instead of a cached npm install.
-export { CursorPlugin } from "/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js";
-```
+Session titles: OpenCode 2.0 writes a title for each new session with a small model. When Cursor lists a Haiku, Gemini Flash or GPT Luna model, the plugin marks it so OpenCode picks it; otherwise the title costs a run of the session's model. To choose yourself, set `"agents": { "title": { "model": "cursor/<model>" } }`, or turn titles off with `"agents": { "title": { "disabled": true } }`.
 
-After the plugin loads once, it will automatically create/rename a versioned plugin entry
-so `/status` can show the version (you may need to restart OpenCode once).
+### OpenCode 1.x
 
-Important: if you previously installed the npm plugin via `opencode.json` (e.g. `"plugin": ["opencode-plugin-cursor"]`), remove it to avoid loading **two** versions of the plugin.
+1. Create the same plugin file, `~/.config/opencode/plugins/cursor.ts` (see above).
+2. Add the provider to `~/.config/opencode/opencode.json`, with model IDs from `agent --list-models`:
 
-If you prefer installing from npm instead of a local checkout, pin the version in your OpenCode config (after publishing):
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "provider": {
+       "cursor": {
+         "npm": "@ai-sdk/openai-compatible",
+         "name": "Cursor",
+         "options": { "baseURL": "http://127.0.0.1:8765/v1", "apiKey": "unused" },
+         "models": {
+           "auto": { "name": "Auto" },
+           "gpt-5.2": { "name": "GPT-5.2" }
+         }
+       }
+     }
+   }
+   ```
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-plugin-cursor@0.2.0"]
-}
-```
+3. Restart OpenCode and try `opencode run -m cursor/auto "say hello"`.
 
-4) Add the Cursor provider to `~/.config/opencode/opencode.json`:
+The plugin starts the bridge on `127.0.0.1:8765` when OpenCode starts (or use the `cursor_bridge_start` tool, or run `node packages/cursor-openai-bridge/dist/cli.js` yourself). One bridge serves every open project; the plugin tells it which project each request comes from.
 
-- Base URL: `http://127.0.0.1:8765/v1`
-- Models: use the IDs from `agent --list-models` (examples: `auto`, `gpt-5.2`, `sonnet-4.5-thinking`, ...)
+WSL2 users: see [docs/WSL2_SETUP.md](docs/WSL2_SETUP.md).
 
-5) Restart OpenCode and verify:
+## Configuration
 
-```bash
-opencode models cursor
-opencode run -m cursor/gpt-5.2 "say hello"
-```
+Plugin options go in the 2.0 config entry above, or in a 1.x tuple: `"plugin": [["/abs/path/to/packages/opencode-plugin-cursor", { ... }]]`. Most have an environment variable too; options win.
 
-If the provider can’t connect, run `cursor_bridge_start` inside OpenCode (or start the bridge manually):
+| Option | Environment variable | Default | |
+| --- | --- | --- | --- |
+| `mode` | `CURSOR_BRIDGE_MODE` | `ask` | How Cursor runs for model requests: `ask` (read-only), `plan`, or `agent` (may edit files and run commands) |
+| `force` | `CURSOR_BRIDGE_FORCE` | `false` | Pass `--force`: run commands without asking unless your Cursor permissions deny them |
+| `approveMcps` | `CURSOR_BRIDGE_APPROVE_MCPS` | `false` | Pass `--approve-mcps` |
+| `trust` | `CURSOR_BRIDGE_TRUST` | `true` | Pass `--trust`, so headless runs do not stop at Cursor's workspace-trust prompt |
+| `timeoutMs` | `CURSOR_BRIDGE_TIMEOUT_MS` | `300000` | Per-request limit; `0` turns it off |
+| `toolActivity` | `CURSOR_BRIDGE_TOOL_ACTIVITY` | `reasoning` | Show Cursor's tool calls as reasoning, or `off` |
+| `agentBin` | `CURSOR_AGENT_BIN` | `agent` | Cursor CLI executable |
+| `models` | | all listed models | Register only these model IDs (2.0) |
+| `providerID` | | `cursor` | Provider ID; models are `<providerID>/<model>` |
+| `name` | | `Cursor` | Provider display name |
+| `contextLimit`, `outputLimit` | | `200000`, `32000` | Token limits reported to OpenCode (2.0) |
+| `provider` | | `true` | `false`: tools only, no provider (2.0) |
+| `tools` | | `true` | `false`: provider only, no tools (2.0) |
+| `autostart` | `CURSOR_BRIDGE_AUTOSTART` | `true` | Start the bridge when it is not running (1.x) |
+| `bridgeURL` | `CURSOR_BRIDGE_HOST`, `CURSOR_BRIDGE_PORT` | `http://127.0.0.1:8765` | Where the bridge is (1.x) |
 
-```bash
-node /path/to/cursor-opencode-auth/packages/cursor-openai-bridge/dist/cli.js
-```
+In OpenCode 2.0 you can also override what the plugin registers under `providers.cursor` in your config (names, limits, `settings`); your config is applied after the plugin. The bridge has more settings of its own; see [docs/USAGE.md](docs/USAGE.md#bridge).
 
-Bridge knobs (optional env vars):
+## Tools
 
-- `CURSOR_BRIDGE_WORKSPACE`: workspace dir for Cursor CLI (defaults to the bridge process `cwd`)
-- `CURSOR_BRIDGE_MODE`: `ask` | `plan` | `agent` (default: `ask`)
-- `CURSOR_BRIDGE_STRICT_MODEL`: `true` | `false` (default: `true`)
-- `CURSOR_BRIDGE_FORCE`: `true` | `false` (default: `false`)
-- `CURSOR_BRIDGE_APPROVE_MCPS`: `true` | `false` (default: `false`)
+| Tool | What it does |
+| --- | --- |
+| `cursor_cli_status` | Cursor CLI login status (`agent status`) |
+| `cursor_cli_models` | Models Cursor CLI offers (`refresh: true` skips the cache) |
+| `cursor_cli_run` | Run Cursor CLI on a prompt and return its answer (ask mode unless `mode` says otherwise; `outputFormat: "stream-json"` adds a summary of Cursor's tool calls) |
+| `cursor_cli_patch` | Let Cursor work in a temporary git worktree and return its changes as a diff; `apply: true` applies it, `allowDirty: true` starts from your uncommitted changes |
+| `cursor_cli_mcp_list`, `cursor_cli_mcp_tools` | Inspect the MCP servers configured in Cursor CLI |
+| `cursor_cloud_*` | Cursor Cloud Agents: `models`, `launch_agent`, `agent`, `agents`, `conversation`, `followup`, `stop`, `delete`, `me`, `repositories` (needs `CURSOR_API_KEY`) |
+| `cursor_bridge_*` | Bridge `status`, `start`, `stop`, `restart` (OpenCode 1.x) |
 
-## Status
+In OpenCode 2.0 the tools live in the `cursor` namespace (code mode calls them as `tools.cursor.cli_run(...)`), and their names stay `cursor_cli_run` and so on.
 
-Docs:
+## Safety
 
-- `docs/PLAN.md` (architecture + roadmap)
-- `docs/USAGE.md` (how to install + use)
-- `docs/WSL2_SETUP.md` (WSL2-specific setup guide with troubleshooting)
-- `docs/SECURITY.md` (risks + mitigations)
+- Cursor CLI runs on your machine with your permissions. Restrict it with `~/.cursor/cli-config.json` or `<project>/.cursor/cli.json`; see [examples/cursor/cli.json](examples/cursor/cli.json) for a read-only setup.
+- `cursor_cli_patch` runs Cursor with `--force` inside a throwaway worktree. Your files change only with `apply: true`, but Cursor can still run commands there.
+- OpenCode 1.x can ask before each Cursor tool runs: `"permission": { "cursor_cli_*": "ask", "cursor_cloud_*": "ask" }`.
+- OpenCode 2.0 cannot ask before plugin tools run yet. Hide the tools you do not want, e.g. `"permission": { "cursor_cloud_*": "deny" }`, or set the plugin option `tools: false`.
+- Cloud Agents run remotely and execute commands; only use them on repositories where that is acceptable.
 
-The OpenCode plugin adds tools:
-
-- `cursor_cli_status` (shows Cursor CLI auth status)
-- `cursor_cli_models` (lists Cursor CLI models)
-- `cursor_cli_run` (runs Cursor CLI in `--print` mode; supports `stream-json` output for full tool call visibility)
-- `cursor_cli_patch` (runs Cursor CLI in an isolated git worktree and returns a patch)
-- `cursor_cli_mcp_list` (lists MCP servers configured in Cursor CLI)
-- `cursor_cli_mcp_tools` (lists tools from a specific Cursor MCP server)
-- `cursor_cloud_*` tools (launch and manage Cursor Cloud Agents via `https://api.cursor.com/v0/...`)
-
-## Repo layout
-
-- `packages/opencode-plugin-cursor/` - OpenCode plugin package
-- `packages/opencode-plugin-cursor/src/tools/` - tool definitions (`cursor_cli_*`, `cursor_cloud_*`, `cursor_bridge_*`)
-- `packages/opencode-plugin-cursor/src/lib/` - shared helpers (bridge process mgmt, Cursor API client, etc.)
-- `packages/cursor-openai-bridge/` - local OpenAI-compatible server backed by Cursor CLI
-- `packages/cursor-openai-bridge/src/lib/` - bridge internals (config, HTTP helpers, Cursor CLI wrapper)
-- `docs/PLAN.md` - architecture + build plan
-- `examples/` - sample Cursor + OpenCode config
-
-## Using the tools
-
-- `cursor_cli_run`: one-off Cursor CLI response (defaults to Cursor `ask` mode)
-- `cursor_cli_patch`: run Cursor in an isolated git worktree and return a diff inside `<patch>...</patch>` (apply with OpenCode `patch`)
-- `cursor_cloud_*`: manage Cursor Cloud Agents via `https://api.cursor.com/v0/...` (requires `CURSOR_API_KEY`)
+More in [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Known limitations
 
-### Bridge-as-provider creates nested agent loops
+- **Cursor is an agent, not a bare model.** A `cursor/...` request runs Cursor's own agent loop inside OpenCode's. Cursor works with its own tools (in ask mode: read and search only), so OpenCode's tool calls, permissions and edit tracking do not apply to what Cursor does. Prefer `mode: "ask"` (the default) and let OpenCode make the edits, or use `cursor_cli_patch` for reviewable changes.
+- **Each request starts from scratch.** Cursor receives the conversation as one prompt per request, so long sessions resend everything and there is no prompt caching between turns.
+- **Text only.** Images and file attachments are replaced by a placeholder.
+- **Usage.** Every request, including title generation and retries, is a full Cursor run and counts against your Cursor plan. Failures that cannot succeed on retry (no login, unknown model, usage limit) are reported to OpenCode as non-retryable.
 
-Cursor CLI is a full coding agent (it reads files, calls tools, writes code), not a model. When you use `cursor/<model>` as an OpenCode provider, OpenCode sends a prompt to the bridge, which runs Cursor's own agent loop, then returns only the final text. This means:
+## Repository layout
 
-- Two agent loops run with no coordination (OpenCode's loop wrapping Cursor's loop).
-- Cursor's internal tool calls (file reads, edits, shell commands) are invisible to OpenCode.
-- OpenCode treats Cursor's agent output as a "model response," which is a semantic mismatch.
+- `packages/opencode-plugin-cursor/`: the OpenCode plugin
+  - `src/v2/`: OpenCode 2.0 provider (an AI SDK language model that runs Cursor CLI) and tool adapter
+  - `src/v1.ts`: OpenCode 1.x entry (tools and bridge management)
+  - `src/tools/`: `cursor_cli_*`, `cursor_cloud_*` and `cursor_bridge_*` tools
+- `packages/cursor-openai-bridge/`: OpenAI-compatible HTTP server backed by Cursor CLI, plus the Cursor CLI helpers the plugin shares
+- `test-support/fake-agent.cjs`: stand-in Cursor CLI for the test suites
+- `docs/`: [usage](docs/USAGE.md), [security](docs/SECURITY.md), [design](docs/PLAN.md), [WSL2](docs/WSL2_SETUP.md)
+- `examples/`: sample OpenCode and Cursor CLI configuration
 
-**Recommended:** Use the CLI tools (`cursor_cli_run` with `outputFormat: "stream-json"`, or `cursor_cli_patch`) instead of the provider for full visibility into what Cursor did. The provider approach works for simple question-answering but loses important context for coding tasks.
-
-### OpenCode does not support plugin-registered providers
-
-OpenCode's plugin API supports registering tools and event hooks, but not custom model providers. Providers must be configured via `opencode.json` with an AI SDK package (e.g., `@ai-sdk/openai-compatible`). This is why the bridge server exists as a workaround. A proper integration would require OpenCode to add `provider()` registration to its plugin API (see [OpenCode plugin docs](https://opencode.ai/docs/plugins/)).
-
-## Safety notes
-
-- Cursor CLI in print mode can still read your repo. Treat it as trusted code execution.
-- To safely allow/deny tool use in Cursor CLI, configure `~/.cursor/cli-config.json` or `<project>/.cursor/cli.json` (see Cursor docs: CLI Permissions).
-- Cursor Cloud Agents are remote and auto-run commands; only use on repos you can safely run in the cloud.
+Development: `npm test` builds and runs both test suites; see [CONTRIBUTING.md](CONTRIBUTING.md).

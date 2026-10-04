@@ -1,0 +1,27 @@
+// OpenCode 1.x: ~/.config/opencode/opencode.json (or <project>/opencode.jsonc)
+// Load the plugin with a file in ~/.config/opencode/plugins/ (see the README).
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // The plugin starts the bridge on 127.0.0.1:8765. List model IDs with `agent --list-models`.
+  "provider": {
+    "cursor": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Cursor",
+      "options": {
+        "baseURL": "http://127.0.0.1:8765/v1",
+        "apiKey": "unused"
+      },
+      "models": {
+        "auto": { "name": "Auto" },
+        "gpt-5.2": { "name": "GPT-5.2" }
+      }
+    }
+  },
+
+  // Ask before OpenCode invokes Cursor tools.
+  "permission": {
+    "cursor_cli_*": "ask",
+    "cursor_cloud_*": "ask"
+  }
+}

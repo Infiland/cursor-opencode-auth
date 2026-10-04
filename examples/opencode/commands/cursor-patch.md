@@ -1,11 +1,11 @@
 ---
-description: Run Cursor and apply a patch
+description: Let Cursor make a change in a temporary worktree, then apply it
 agent: build
 ---
-Use the `cursor_cli_patch` tool with the following task prompt:
+Call the `cursor_cli_patch` tool with `apply: true` and this task as the prompt:
 
 $ARGUMENTS
 
-Then extract the diff inside the `<patch>` tag and apply it to the workspace using OpenCode's `patch` tool.
+If the tool reports uncommitted changes, ask me whether to retry with `allowDirty: true` (Cursor then starts from my current files).
 
-If the patch is empty, explain why and stop.
+Afterwards, list the files that changed and summarize what Cursor did. If the patch is empty, explain why and stop. If applying the patch failed, show the error and the patch, and do not apply it another way.
